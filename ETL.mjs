@@ -2,6 +2,7 @@ import fetch from 'node-fetch'
 import CampusModel from './database/Campus.mjs'
 import ExtensionProjectModel from './database/ExtensionProject.mjs'
 import ParticipantModel from './database/Participant.mjs'
+import _ from 'lodash'
 
 /**
  * Class to do ETL in dataset
@@ -31,31 +32,42 @@ class ETL {
   // prepare the data to converter
   async processing() {
     const data = await this.getData()
+    const uniq = {
+      campus: _.uniqBy(data.map(m => ({
+        codCampus: m.uo.uuid,
+        nome: m.uo.nome,
+        url: m.uo.url,
+      })), 'codCampus'),
+      participant: []
+    }
+
+    data.forEach(m => {
+      uniq.participant.push(...m.participantes.map(mm => ({
+        nome: mm.nome,
+        matricula: mm.uuid,
+      })))
+    })
+
+    uniq.participant = _.uniqBy(uniq.participant, 'matricula')
+
     console.log('Organize data to save in mongoDB \n')
 
-    data.forEach(async itemDataset => {
-      // get data campus
-      const campus = {
-        codCampus: itemDataset.uo.uuid,
-        nome: itemDataset.uo.nome,
-        url: itemDataset.uo.url,
-      }
+    // save campus
+    const campus = await CampusModel.create(uniq.campus)
 
-      const resultCampus = await CampusModel.create(campus)
-      this.campus.push(campus)
+    // save participants
+    const participants = await ParticipantModel.create(uniq.participant)
 
-      // get data of participants
-      const participants = []
+    await Promise.all(data.map(async itemDataset => {
+      const participantes = []
 
       itemDataset.participantes.forEach(participant => {
-        participants.push({
-          nome: participant.nome,
-          matricula: participant.uuid,
-        })
-      })
+        const data = participants.find(f => f.matricula === participant.uuid)
 
-      this.participants.push(...participants)
-      const resultParticipants = await ParticipantModel.create(participants)
+        if (data) {
+          participantes.push(data._id.toString())
+        }
+      })
 
       // get data of project extension
       const extensionProject = {
@@ -71,13 +83,13 @@ class ETL {
         resultados: itemDataset.resultados_esperados,
         focoTecnologicoo: itemDataset.foco_tecnologico,
         areaConhecimento: itemDataset.area_conhecimento,
-        campus: resultCampus._id,
-        participantes: resultParticipants.map(m => m._id.toString())
+        campus: campus.find(f => f.codCampus === itemDataset.uo.uuid)._id,
+        participantes
       }
 
       await ExtensionProjectModel.create(extensionProject)
       this.extensionProject.push(extensionProject)
-    });
+    }))
 
     console.log('---------------------\n\n Done!! ready!! \n\n--------------------------')
     return this
